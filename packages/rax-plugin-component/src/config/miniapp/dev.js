@@ -11,10 +11,7 @@ module.exports = (context, devCompileLog) => {
   jsx2mp.watch({
     entry: 'src/index',
     type: 'component',
-    workDirectory: process.cwd(),
     distDirectory: outputPath,
-    enableWatch: true,
-    platform: 'ali',
     afterCompiled: (err, stats) => {
       devCompileLog({
         err,

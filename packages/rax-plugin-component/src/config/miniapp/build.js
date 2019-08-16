@@ -4,7 +4,7 @@ const path = require('path');
 
 const getOutputPath = require('./getOutputPath');
 
-module.exports = (context, devCompileLog) => {
+module.exports = (context) => {
   const outputPath = getOutputPath(context);
 
   fs.removeSync(outputPath);
@@ -13,10 +13,7 @@ module.exports = (context, devCompileLog) => {
     jsx2mp.build({
       entry: 'src/index',
       type: 'component',
-      workDirectory: process.cwd(),
       distDirectory: outputPath,
-      enableWatch: false,
-      platform: 'ali',
       afterCompiled: (err, stats) => {
         resolve({
           err,
