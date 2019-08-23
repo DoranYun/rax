@@ -6,6 +6,8 @@ module.exports = {
   publicPath: '/',
   devPublicPath: '/',
   exclude: 'node_modules',
+  externals: '',
+  analyzer: false,
   devServer: {
     compress: true,
     disableHostCheck: true,
