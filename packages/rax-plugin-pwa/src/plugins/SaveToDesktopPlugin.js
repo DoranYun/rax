@@ -1,3 +1,13 @@
+/**
+ * PWA_SaveToDesktopPlugin
+ * https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Add_to_home_screen
+ * 1. create manifest.json
+ * 2. process icon file to multi-size
+ * 3. set HTML header tags
+ * 4. support iOS
+ */
+
+
 const path = require('path');
 const jimp = require('jimp');
 const mime = require('mime');
