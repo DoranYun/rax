@@ -26,6 +26,22 @@ const precache = (target) => {
   });
 };
 
+const stringToReg = (str) => {
+  if (!str) return;
+  const match = str.match(/^\\/(.*)\\/(\\w*)/);;
+  if (!match) return;
+  const [, pattern, flags] = match;
+  return new RegExp(pattern, flags);
+}
+
+const isMatch = (patternStr, testStr) => {
+  const reg = stringToReg(patternStr);
+
+  if (!reg||!testStr) return false;
+
+  return !!testStr.match(reg);
+}
+
 // save cache
 const saveCache = (req, res) => {
   return caches.open(CACHE_ID).then(cache => {
@@ -57,9 +73,9 @@ self.addEventListener('fetch', e => {
 
   if (
     e.request.method != 'GET' ||
-    !savedCachePatternList.some(pat => url.href.match(pat) != null) ||
+    !savedCachePatternList.some(pat => isMatch(pat, url.href)) ||
     // ignore ignorePatternList
-    ignorePatternList.some(pat => url.href.match(pat) != null)
+    ignorePatternList.some(pat => isMatch(pat, url.href))
   ) {
     return;
   }
