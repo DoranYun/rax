@@ -1,35 +1,41 @@
 import Host from './host';
 import Component from './component';
+import invokeFunctionsWithContext from '../invokeFunctionsWithContext';
+import { invokeMinifiedError } from '../error';
+import { INTERNAL } from '../constant';
 
 const RE_RENDER_LIMIT = 24;
 /**
  * Functional Reactive Component Class Wrapper
  */
-class ReactiveComponent extends Component {
+export default class ReactiveComponent extends Component {
   constructor(pureRender, ref) {
     super();
+    // Marked ReactiveComponent.
+    this.__isReactiveComponent = true;
     // A pure function
-    this._render = pureRender;
-    this._hookID = 0;
+    this.__render = pureRender;
+    this.__hookID = 0;
     // Number of rerenders
-    this._reRenders = 0;
-    this._hooks = {};
+    this.__reRenders = 0;
+    this.__hooks = {};
+    // Is render scheduled
+    this.__isScheduled = false;
+    this.__shouldUpdate = false;
+    this.__children = null;
+    this.__contexts = {};
     // Handles store
     this.didMount = [];
     this.didUpdate = [];
     this.willUnmount = [];
-    // Is render scheduled
-    this.isScheduled = false;
-    this.shouldUpdate = false;
-    this._children = null;
 
     this.state = {};
 
-    if (pureRender.forwardRef) {
-      this.prevForwardRef = this.forwardRef = ref;
+    if (pureRender.__forwardRef) {
+      this.__prevForwardRef = this.__forwardRef = ref;
     }
 
-    const compares = pureRender.compares;
+    const compares = pureRender.__compares;
     if (compares) {
       this.shouldComponentUpdate = (nextProps) => {
         // Process composed compare
@@ -42,75 +48,68 @@ class ReactiveComponent extends Component {
           }
         }
 
-        return !arePropsEqual || this.prevForwardRef !== this.forwardRef;
+        return !arePropsEqual || this.__prevForwardRef !== this.__forwardRef;
       };
     }
   }
 
   getHooks() {
-    return this._hooks;
+    return this.__hooks;
   }
 
   getHookID() {
-    return ++this._hookID;
+    return ++this.__hookID;
   }
 
-  readContext(context) {
-    const Provider = context.Provider;
-    const unmaskContext = this._internal._context;
-    const contextProp = Provider.contextProp;
+  useContext(context) {
+    const contextID = context._contextID;
+    let contextItem = this.__contexts[contextID];
+    if (!contextItem) {
+      const provider = context.__getNearestParentProvider(this);
+      contextItem = this.__contexts[contextID] = {
+        __provider: provider
+      };
 
-    const contextEmitter = unmaskContext[contextProp];
-
-    if (contextEmitter) {
-      const mountId = this._internal._mountID;
-
-      if (!contextEmitter[mountId]) {
-        // One context one updater bind
-        contextEmitter[mountId] = {};
-
-        const contextUpdater = (newContext) => {
-          if (newContext !== contextEmitter[mountId].renderedContext) {
-            this.update();
+      if (provider) {
+        const handleContextChange = (value) => {
+          // Check the last value that maybe alread rerender
+          // avoid rerender twice when provider value changed
+          if (contextItem.__lastValue !== value) {
+            this.__shouldUpdate = true;
+            this.__update();
           }
         };
-
-        contextEmitter.on(contextUpdater);
-
-        this.willUnmount.push(() => {
-          delete contextEmitter[mountId];
-          contextEmitter.off(contextUpdater);
-        });
+        provider.__on(handleContextChange);
+        this.willUnmount.push(() => provider.__off(handleContextChange));
       }
-
-      return contextEmitter[mountId].renderedContext = contextEmitter.value;
     }
 
-    return Provider.defaultValue;
+    return contextItem.__lastValue = contextItem.__provider ?
+      contextItem.__provider.getValue() : context._defaultValue;
   }
 
   componentWillMount() {
-    this.shouldUpdate = true;
+    this.__shouldUpdate = true;
   }
 
   componentDidMount() {
-    this.didMount.forEach(handler => handler());
+    invokeFunctionsWithContext(this.didMount);
   }
 
   componentWillReceiveProps() {
-    this.shouldUpdate = true;
+    this.__shouldUpdate = true;
   }
 
   componentDidUpdate() {
-    this.didUpdate.forEach(handler => handler());
+    invokeFunctionsWithContext(this.didUpdate);
   }
 
   componentWillUnmount() {
-    this.willUnmount.forEach(handler => handler());
+    invokeFunctionsWithContext(this.willUnmount);
   }
 
-  update() {
-    this._internal._isPendingForceUpdate = true;
+  __update() {
+    this[INTERNAL].__isPendingForceUpdate = true;
     this.setState({});
   }
 
@@ -119,29 +118,31 @@ class ReactiveComponent extends Component {
       Host.measurer && Host.measurer.beforeRender();
     }
 
-    this._hookID = 0;
-    this._reRenders = 0;
-    this.isScheduled = false;
-    let children = this._render(this.props, this.forwardRef ? this.forwardRef : this.context);
+    this.__hookID = 0;
+    this.__reRenders = 0;
+    this.__isScheduled = false;
+    let children = this.__render(this.props, this.__forwardRef ? this.__forwardRef : this.context);
 
-    while (this.isScheduled) {
-      this._reRenders++;
-      if (this._reRenders > RE_RENDER_LIMIT) {
-        throw Error('Too many re-renders, the number of renders is limited to prevent an infinite loop.');
+    while (this.__isScheduled) {
+      this.__reRenders++;
+      if (this.__reRenders > RE_RENDER_LIMIT) {
+        if (process.env.NODE_ENV !== 'production') {
+          throw new Error('Too many re-renders, the number of renders is limited to prevent an infinite loop.');
+        } else {
+          invokeMinifiedError(4);
+        }
       }
 
-      this._hookID = 0;
-      this.isScheduled = false;
-      children = this._render(this.props, this.forwardRef ? this.forwardRef : this.context);
+      this.__hookID = 0;
+      this.__isScheduled = false;
+      children = this.__render(this.props, this.__forwardRef ? this.__forwardRef : this.context);
     }
 
-    if (this.shouldUpdate) {
-      this._children = children;
-      this.shouldUpdate = false;
+    if (this.__shouldUpdate) {
+      this.__children = children;
+      this.__shouldUpdate = false;
     }
 
-    return this._children;
+    return this.__children;
   }
 }
-
-export default ReactiveComponent;

@@ -1,7 +1,7 @@
 /* global VIEWPORT_WIDTH, DEVICE_WIDTH */
 import * as DriverDOM from 'driver-dom';
-import { convertUnit, setRem } from 'style-unit';
-import * as Flexbox from './flexbox';
+import { convertUnit, setRpx } from 'style-unit';
+import * as Flexbox from './flexbox'; // Compatible with old version of safari.
 
 const STYLE = 'style';
 const DEFAULT_VIEWPORT = 750;
@@ -32,26 +32,15 @@ const driver = Object.assign({}, DriverDOM, {
   },
   beforeRender(options) {
     // Init rem unit
-    setRem(getDeviceWidth() / getViewportWidth());
+    setRpx(getDeviceWidth() / getViewportWidth());
     return DriverDOM.beforeRender(options);
   },
   setStyle(node, style) {
-    const tranformedStyle = {};
-
     if (Array.isArray(style)) {
       style = style.reduce((prev, curr) => Object.assign(prev, curr), {});
     }
 
-    for (let prop in style) {
-      if (style.hasOwnProperty(prop)) {
-        let val = style[prop];
-        if (Flexbox.isFlexProp(prop)) {
-          Flexbox[prop](val, tranformedStyle);
-        } else {
-          tranformedStyle[prop] = convertUnit(val, prop);
-        }
-      }
-    }
+    const tranformedStyle = transformStyle(style);
 
     for (let prop in tranformedStyle) {
       if (tranformedStyle.hasOwnProperty(prop)) {
@@ -60,12 +49,35 @@ const driver = Object.assign({}, DriverDOM, {
         if (Array.isArray(transformValue)) {
           for (let i = 0; i < transformValue.length; i++) node.style[prop] = transformValue[i];
         } else {
-          node.style[prop] = transformValue;
+          if (prop[0] === '-' && prop[1] === '-') {
+            // reference: https://developer.mozilla.org/en-US/docs/Web/API/CSSStyleDeclaration/setProperty. style.setProperty do not support Camel-Case style properties.
+            node.style.setProperty(prop, transformValue);
+          } else {
+            node.style[prop] = transformValue;
+          }
         }
       }
     }
   },
 });
+
+function transformStyle(style, ret = {}) {
+  for (let prop in style) {
+    if (style.hasOwnProperty(prop)) {
+      let val = style[prop];
+      if (typeof val === 'object') {
+        delete style[prop];
+        transformStyle(val, ret);
+      } else if (Flexbox.isFlexProp(prop)) {
+        Flexbox[prop](val, ret);
+      } else {
+        ret[prop] = convertUnit(val, prop);
+      }
+    }
+  }
+
+  return ret;
+}
 
 function normalizeEventName(node, eventName, props) {
   const tagName = node.tagName.toLowerCase();

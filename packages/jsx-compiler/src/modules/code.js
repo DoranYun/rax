@@ -1,5 +1,5 @@
 const t = require('@babel/types');
-const { join } = require('path');
+const { join, relative, dirname } = require('path');
 const { parseExpression } = require('../parser');
 const isClassComponent = require('../utils/isClassComponent');
 const isFunctionComponent = require('../utils/isFunctionComponent');
@@ -8,13 +8,11 @@ const traverse = require('../utils/traverseNodePath');
 const RAX_PACKAGE = 'rax';
 const SUPER_COMPONENT = 'Component';
 
-const CREATE_APP = 'createApp';
 const CREATE_COMPONENT = 'createComponent';
 const CREATE_PAGE = 'createPage';
 const CREATE_STYLE = 'createStyle';
 
 const SAFE_SUPER_COMPONENT = '__component__';
-const SAFE_CREATE_APP = '__create_app__';
 const SAFE_CREATE_COMPONENT = '__create_component__';
 const SAFE_CREATE_PAGE = '__create_page__';
 const SAFE_CREATE_STYLE = '__create_style__';
@@ -25,7 +23,8 @@ const USE_STATE = 'useState';
 const EXPORTED_DEF = '__def__';
 const RUNTIME = '/npm/jsx2mp-runtime';
 
-const isCoreModule = (mod) => /^@core\//.test(mod);
+const isAppRuntime = (mod) => mod === 'rax-app';
+const isFileModule = (mod) => /\.(png|jpe?g|gif|bmp|webp)$/.test(mod);
 
 function getConstructor(type) {
   switch (type) {
@@ -45,27 +44,17 @@ function getConstructor(type) {
 module.exports = {
   parse(parsed, code, options) {
     const { defaultExportedPath, eventHandlers = [] } = parsed;
-    if (!defaultExportedPath || !defaultExportedPath.node) return; // Can not found default export.
-
+    if (options.type !== 'app' && (!defaultExportedPath || !defaultExportedPath.node)) {
+      // Can not found default export, otherwise app.js is excluded.
+      return;
+    }
     let userDefineType;
 
     if (options.type === 'app') {
       userDefineType = 'function';
-      const { id, generator, async, params, body } = defaultExportedPath.node;
-      const replacer = getReplacer(defaultExportedPath);
-      if (replacer) {
-        replacer.replaceWith(
-          t.variableDeclaration('const', [
-            t.variableDeclarator(
-              t.identifier(EXPORTED_DEF),
-              t.functionExpression(id, params, body, generator, async)
-            )
-          ])
-        );
-      }
     } else if (isFunctionComponent(defaultExportedPath)) { // replace with class def.
       userDefineType = 'function';
-      const { id, generator, async, params, body } = defaultExportedPath.node;
+      const { id, generator, async, body, params } = defaultExportedPath.node;
       const replacer = getReplacer(defaultExportedPath);
       if (replacer) {
         replacer.replaceWith(
@@ -97,19 +86,27 @@ module.exports = {
 
     const hooks = collectHooks(parsed.renderFunctionPath);
 
+    const targetFileDir = dirname(join(options.outputPath, relative(options.sourcePath, options.resourcePath)));
+
     removeRaxImports(parsed.ast);
-    renameCoreModule(parsed.ast);
-    renameNpmModules(parsed.ast);
-    addDefine(parsed.ast, options.type, userDefineType, eventHandlers, parsed.useCreateStyle, hooks);
+    renameCoreModule(parsed.ast, options.outputPath, targetFileDir);
+    renameFileModule(parsed.ast);
+    renameAppConfig(parsed.ast, options.sourcePath, options.resourcePath);
+
+    const currentNodeModulePath = join(options.sourcePath, 'npm');
+    const npmRelativePath = relative(dirname(options.resourcePath), currentNodeModulePath);
+    renameNpmModules(parsed.ast, npmRelativePath, options.resourcePath, options.cwd);
+
+    if (options.type !== 'app') {
+      addDefine(parsed.ast, options.type, options.outputPath, targetFileDir, userDefineType, eventHandlers, parsed.useCreateStyle, hooks);
+    }
+
     removeDefaultImports(parsed.ast);
 
     /**
      * updateChildProps: collect props dependencies.
      */
     if (options.type !== 'app' && parsed.renderFunctionPath) {
-      addUpdateData(parsed.dynamicValue, parsed.renderFunctionPath);
-      addUpdateEvent(parsed.dynamicEvents, parsed.eventHandler, parsed.renderFunctionPath);
-
       const fnBody = parsed.renderFunctionPath.node.body.body;
       let firstReturnStatementIdx = -1;
       for (let i = 0, l = fnBody.length; i < l; i++) {
@@ -142,12 +139,19 @@ module.exports = {
         ];
         const callUpdateProps = t.expressionStatement(t.callExpression(updateProps, updatePropsArgs));
         if (propMaps.length > 0) {
-          (parentNode || fnBody).push(callUpdateProps);
+          const targetNode = parentNode || fnBody;
+          if (t.isReturnStatement(targetNode[targetNode.length - 1])) {
+            targetNode.splice(targetNode.length - 1, 0, callUpdateProps);
+          } else {
+            targetNode.push(callUpdateProps);
+          }
         } else if ((parentNode || fnBody).length === 0) {
           // Remove empty loop exp.
-          parentNode.remove && parentNode.remove();
+          parentNode && parentNode.remove && parentNode.remove();
         }
       });
+      addUpdateData(parsed.dynamicValue, parsed.renderItemFunctions, parsed.renderFunctionPath);
+      addUpdateEvent(parsed.dynamicEvents, parsed.eventHandler, parsed.renderFunctionPath);
     }
   },
 };
@@ -165,37 +169,116 @@ function genTagIdExp(expressions) {
   return parseExpression(ret);
 }
 
-function renameCoreModule(ast) {
+function renameCoreModule(ast, outputPath, targetFileDir) {
   traverse(ast, {
     ImportDeclaration(path) {
       const source = path.get('source');
-      if (source.isStringLiteral() && isCoreModule(source.node.value)) {
-        source.replaceWith(t.stringLiteral(RUNTIME));
+      if (source.isStringLiteral() && isAppRuntime(source.node.value)) {
+        let runtimeRelativePath = relative(targetFileDir, join(outputPath, RUNTIME));
+        runtimeRelativePath = runtimeRelativePath[0] !== '.' ? './' + runtimeRelativePath : runtimeRelativePath;
+        source.replaceWith(t.stringLiteral(runtimeRelativePath));
       }
     }
   });
 }
 
-
-function renameNpmModules(ast) {
+// import img from '../assets/img.png' => const img = '../assets/img.png'
+function renameFileModule(ast) {
   traverse(ast, {
     ImportDeclaration(path) {
       const source = path.get('source');
-      if (source.isStringLiteral() && ['.', '/'].indexOf(source.node.value[0]) === -1) {
-        source.replaceWith(t.stringLiteral(join('/npm', source.node.value)));
+      if (source.isStringLiteral() && isFileModule(source.node.value)) {
+        source.parentPath.replaceWith(t.variableDeclaration('const', [
+          t.variableDeclarator(
+            t.identifier(path.get('specifiers')[0].node.local.name),
+            t.stringLiteral(source.node.value)
+          )
+        ]));
       }
     }
   });
 }
 
-function addDefine(ast, type, userDefineType, eventHandlers, useCreateStyle, hooks) {
+/**
+ * Rename app.json to app.raw.json, for prev is compiled to adapte miniapp.
+ * eg:
+ *   import appConfig from './app.json' => import appConfig from './app.raw.json'
+ * @param ast Babel AST.
+ * @param sourcePath Folder path to source.
+ * @param resourcePath Current handling file source path.
+ */
+function renameAppConfig(ast, sourcePath, resourcePath) {
+  traverse(ast, {
+    ImportDeclaration(path) {
+      const source = path.get('source');
+      if (source.isStringLiteral()) {
+        const appConfigSourcePath = join(resourcePath, '..', source.node.value);
+        if (appConfigSourcePath === join(sourcePath, 'app.json')) {
+          const replacement = source.node.value.replace(/app\.json/, 'app.raw.json');
+          source.replaceWith(t.stringLiteral(replacement));
+        }
+      }
+    }
+  });
+}
+
+const WEEX_MODULE_REG = /^@weex(-module)?\//;
+
+function isNpmModule(value) {
+  return !(value[0] === '.' || value[0] === '/');
+}
+
+function isWeexModule(value) {
+  return WEEX_MODULE_REG.test(value);
+}
+
+function getNpmName(value) {
+  const isScopedNpm = /^_?@/.test(value);
+  return value.split('/').slice(0, isScopedNpm ? 2 : 1).join('/');
+}
+
+function renameNpmModules(ast, npmRelativePath, filename, cwd) {
+  const source = (value, prefix, filename, rootContext) => {
+    const npmName = getNpmName(value);
+    const nodeModulePath = join(rootContext, 'node_modules');
+    const searchPaths = [nodeModulePath];
+    const target = require.resolve(npmName, { paths: searchPaths });
+    // In tnpm, target will be like following (symbol linked path):
+    // ***/_universal-toast_1.0.0_universal-toast/lib/index.js
+    let packageJSONPath;
+    try {
+      packageJSONPath = require.resolve(join(npmName, 'package.json'), { paths: searchPaths });
+    } catch (err) {
+      throw new Error(`You may not have npm installed: "${npmName}"`);
+    }
+
+    const moduleBasePath = join(packageJSONPath, '..');
+    const realNpmName = relative(nodeModulePath, moduleBasePath);
+    const modulePathSuffix = relative(moduleBasePath, target);
+
+    let ret = join(prefix, realNpmName, modulePathSuffix);
+    if (ret[0] !== '.') ret = './' + ret;
+    // ret => '../npm/_ali/universal-toast/lib/index.js
+
+    return t.stringLiteral(normalizeFileName(ret));
+  };
+
+  traverse(ast, {
+    ImportDeclaration(path) {
+      const { value } = path.node.source;
+      if (isWeexModule(value)) {
+        path.remove();
+      } else if (isNpmModule(value)) {
+        path.node.source = source(value, npmRelativePath, filename, cwd);
+      }
+    }
+  });
+}
+
+function addDefine(ast, type, outputPath, targetFileDir, userDefineType, eventHandlers, useCreateStyle, hooks) {
   let safeCreateInstanceId;
   let importedIdentifier;
   switch (type) {
-    case 'app':
-      safeCreateInstanceId = SAFE_CREATE_APP;
-      importedIdentifier = CREATE_APP;
-      break;
     case 'page':
       safeCreateInstanceId = SAFE_CREATE_PAGE;
       importedIdentifier = CREATE_PAGE;
@@ -209,6 +292,8 @@ function addDefine(ast, type, userDefineType, eventHandlers, useCreateStyle, hoo
   traverse(ast, {
     Program(path) {
       const localIdentifier = t.identifier(safeCreateInstanceId);
+      // Component(__create_component__(__class_def__));
+      const args = [t.identifier(EXPORTED_DEF)];
 
       // import { createComponent as __create_component__ } from "/__helpers/component";
       const specifiers = [t.importSpecifier(localIdentifier, t.identifier(importedIdentifier))];
@@ -231,15 +316,16 @@ function addDefine(ast, type, userDefineType, eventHandlers, useCreateStyle, hoo
         ));
       }
 
+      let runtimeRelativePath = relative(targetFileDir, join(outputPath, RUNTIME));
+      runtimeRelativePath = runtimeRelativePath[0] !== '.' ? './' + runtimeRelativePath : runtimeRelativePath;
+
       path.node.body.unshift(
         t.importDeclaration(
           specifiers,
-          t.stringLiteral(RUNTIME)
+          t.stringLiteral(runtimeRelativePath)
         )
       );
 
-      // Component(__create_component__(__class_def__));
-      const args = [t.identifier(EXPORTED_DEF)];
       // __create_component__(__class_def__, { events: ['_e*']})
       if (eventHandlers.length > 0) {
         args.push(
@@ -322,11 +408,15 @@ function collectHooks(root) {
   return Object.keys(ret);
 }
 
-function addUpdateData(dynamicValue, renderFunctionPath) {
+function addUpdateData(dynamicValue, renderItemFunctions, renderFunctionPath) {
   const dataProperties = [];
 
   Object.keys(dynamicValue).forEach(name => {
     dataProperties.push(t.objectProperty(t.stringLiteral(name), dynamicValue[name]));
+  });
+
+  renderItemFunctions.map(renderItemFn => {
+    dataProperties.push(t.objectProperty(t.stringLiteral(renderItemFn.name), renderItemFn.node));
   });
 
   const updateData = t.memberExpression(
@@ -356,4 +446,11 @@ function addUpdateEvent(dynamicEvent, eventHandlers = [], renderFunctionPath) {
   fnBody.push(t.expressionStatement(t.callExpression(updateMethods, [
     t.objectExpression(methodsProperties)
   ])));
+}
+
+/**
+ * For that alipay build folder can not contain `@`, escape to `_`.
+ */
+function normalizeFileName(filename) {
+  return filename.replace(/@/g, '_');
 }

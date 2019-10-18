@@ -1,21 +1,23 @@
 import Host from './host';
+import {isString, isNumber, isObject, isArray, isNull} from '../types';
+import { invokeMinifiedError } from '../error';
 
-function instantiateComponent(element) {
+export default function instantiateComponent(element) {
   let instance;
 
-  if (element === undefined || element === null || element === false || element === true) {
-    instance = new Host.Empty();
-  } else if (Array.isArray(element)) {
-    instance = new Host.Fragment(element);
-  } else if (typeof element === 'object' && element.type) {
+  if (isObject(element) && element !== null && element.type) {
     // Special case string values
-    if (typeof element.type === 'string') {
-      instance = new Host.Native(element);
+    if (isString(element.type)) {
+      instance = new Host.__Native(element);
     } else {
-      instance = new Host.Composite(element);
+      instance = new Host.__Composite(element);
     }
-  } else if (typeof element === 'string' || typeof element === 'number') {
-    instance = new Host.Text(String(element));
+  } else if (isString(element) || isNumber(element)) {
+    instance = new Host.__Text(String(element));
+  } else if (element === undefined || isNull(element) || element === false || element === true) {
+    instance = new Host.__Empty();
+  } else if (isArray(element)) {
+    instance = new Host.__Fragment(element);
   } else {
     throwInvalidComponentError(element);
   }
@@ -24,7 +26,9 @@ function instantiateComponent(element) {
 }
 
 export function throwInvalidComponentError(element) {
-  throw Error(`Invalid element type: ${element}. (current: ${typeof element === 'object' && Object.keys(element) || typeof element})`);
+  if (process.env.NODE_ENV === 'production') {
+    invokeMinifiedError(2);
+  } else {
+    throw new Error(`Invalid element type: ${element}. (current: ${isObject(element) && Object.keys(element) || typeof element})`);
+  }
 }
-
-export default instantiateComponent;

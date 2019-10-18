@@ -1,120 +1,84 @@
-import Component from './vdom/component';
+import invokeFunctionsWithContext from './invokeFunctionsWithContext';
+import { useState, useLayoutEffect } from './hooks';
+import { isFunction } from './types';
+import toArray from './toArray';
+import { INTERNAL } from './constant';
+import getNearestParent from './vdom/getNearestParent';
 
-class ValueEmitter {
-  constructor(defaultValue) {
-    this.handlers = [];
-    this.value = defaultValue;
-  }
-
-  on(handler) {
-    this.handlers.push(handler);
-  }
-
-  off(handler) {
-    this.handlers = this.handlers.filter(h => h !== handler);
-  }
-
-  emit() {
-    this.handlers.forEach(handler => handler(this.value));
-  }
-}
-
-let uniqueId = 0;
+let id = 0;
 
 export default function createContext(defaultValue) {
-  const contextProp = '__context_' + uniqueId++ + '__';
+  const contextID = '_c' + id++;
 
-  class Provider extends Component {
-    constructor(props) {
-      super(props);
-      this.emitter = new ValueEmitter(defaultValue);
+  // Provider Component
+  class Provider {
+    constructor() {
+      this.__contextID = contextID;
+      this.__handlers = [];
     }
-
-    getChildContext() {
+    __on(handler) {
+      this.__handlers.push(handler);
+    }
+    __off(handler) {
+      this.__handlers = this.__handlers.filter(h => h !== handler);
+    }
+    // Like getChildContext but called in SSR
+    _getChildContext() {
       return {
-        [contextProp]: this.emitter
+        [contextID]: this
       };
     }
-
-    componentWillMount() {
-      if (this.props.value !== undefined) {
-        this.emitter.value = this.props.value;
-      }
+    getValue() {
+      return this.props.value !== undefined ? this.props.value : defaultValue;
     }
-
-    componentWillReceiveProps(nextProps) {
-      if (this.props.value !== nextProps.value) {
-        this.emitter.value = nextProps.value;
-      }
-    }
-
     componentDidUpdate(prevProps) {
       if (this.props.value !== prevProps.value) {
-        this.emitter.emit();
+        invokeFunctionsWithContext(this.__handlers, null, this.getValue());
       }
     }
-
     render() {
       return this.props.children;
     }
   }
 
-  Provider.childContextTypes = {
-    [contextProp]: () => {}
-  };
-  Provider.contextProp = contextProp;
-  Provider.defaultValue = defaultValue;
-
-  class Consumer extends Component {
-    constructor(props, context) {
-      super(props, context);
-      this.state = {
-        value: this.readContext(this.context)
-      };
-
-      this.onUpdate = value => this.state.value !== value && this.setState({value});
-    }
-
-    readContext(context) {
-      return context[contextProp] ? context[contextProp].value : defaultValue;
-    }
-
-    componentDidMount() {
-      if (this.context[contextProp]) {
-        this.context[contextProp].on(this.onUpdate);
-      }
-    }
-
-    componentWillReceiveProps(nextProps, nextContext) {
-      const newContextValue = this.readContext(nextContext);
-      if (this.state.value !== newContextValue) {
-        this.setState({
-          value: newContextValue
-        });
-      }
-    }
-
-    componentWillUnmount() {
-      if (this.context[contextProp]) {
-        this.context[contextProp].off(this.onUpdate);
-      }
-    }
-
-    render() {
-      let children = this.props.children;
-      let consumer = Array.isArray(children) ? children[0] : children;
-      if (typeof consumer === 'function') {
-        return consumer(this.state.value);
-      }
-    }
+  function getNearestParentProvider(instance) {
+    return getNearestParent(instance, parent => parent.__contextID === contextID);
   }
 
-  Consumer.contextTypes = {
-    [contextProp]: () => {}
-  };
+  // Consumer Component
+  function Consumer(props, context) {
+    // Current `context[contextID]` only works in SSR
+    const [provider] = useState(() => context[contextID] || getNearestParentProvider(this));
+    let value = provider ? provider.getValue() : defaultValue;
+    const [prevValue, setValue] = useState(value);
+
+    if (value !== prevValue) {
+      setValue(value);
+      return; // Interrupt execution of consumer.
+    }
+
+    useLayoutEffect(() => {
+      if (provider) {
+        provider.__on(setValue);
+        return () => {
+          provider.__off(setValue);
+        };
+      }
+    }, []);
+
+    // Consumer requires a function as a child.
+    // The function receives the current context value.
+    const consumer = toArray(props.children)[0];
+    if (isFunction(consumer)) {
+      return consumer(value);
+    }
+  }
 
   return {
     Provider,
     Consumer,
+    _contextID: contextID, // Export for SSR
+    _defaultValue: defaultValue,
+    __getNearestParentProvider: getNearestParentProvider,
   };
 }

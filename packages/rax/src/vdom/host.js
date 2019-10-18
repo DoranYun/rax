@@ -2,13 +2,13 @@
  * Stateful things in runtime
  */
 export default {
-  mountID: 1,
-  // Current owner component
-  owner: null,
-  isUpdating: false,
+  __mountID: 1,
+  __isUpdating: false,
+  // Inject
+  driver: null,
   // Roots
   rootComponents: {},
   rootInstances: {},
-  // Inject
-  driver: null,
+  // Current owner component
+  owner: null,
 };

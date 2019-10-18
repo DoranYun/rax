@@ -1,7 +1,6 @@
 /**
  * Driver for Web DOM
  **/
-const IS_RPX_REG = /\d+rpx/;
 const RPX_REG = /[-+]?\d*\.?\d+(rpx)/g;
 const DANGEROUSLY_SET_INNER_HTML = 'dangerouslySetInnerHTML';
 const __HTML = '__html';
@@ -58,7 +57,6 @@ export function setDecimalPixelTransformer(transformer) {
   decimalPixelTransformer = transformer;
 }
 
-
 function unitTransformer(n) {
   return toFixed(parseFloat(n) / (viewportWidth / 100), unitPrecision) + 'vw';
 }
@@ -69,16 +67,28 @@ function toFixed(number, precision) {
   return Math.round(wholeNumber / 10) * 10 / multiplier;
 }
 
+/**
+ * Create a cached version of a pure function.
+ */
+function cached(fn) {
+  const cache = Object.create(null);
+  return function cachedFn(str) {
+    return cache[str] || (cache[str] = fn(str));
+  };
+}
+
 function calcRpxToVw(value) {
   return value.replace(RPX_REG, unitTransformer);
 }
 
-function convertUnit(value) {
-  value = decimalPixelTransformer(value);
-  return IS_RPX_REG.test(value)
-    ? calcRpxToVw(value)
-    : value;
+function isRpx(str) {
+  return typeof str === 'string' && str.slice(0, -3) === 'rpx';
 }
+
+// Cache the convert fn.
+const convertUnit = cached((value) => isRpx(value) ? calcRpxToVw(value) : value);
+
+const isEventProp = cached((prop) => EVENT_PREFIX_REGEXP.test(prop));
 
 export function setTagNamePrefix(prefix) {
   tagNamePrefix = prefix;
@@ -194,7 +204,7 @@ export function createElement(type, props, component) {
 
           if (attributeName === STYLE) {
             // Remove invalid style prop, and direct reset style to child avoid diff style
-            for (let i = 0; i < hydrationChild.style.length; i++) {
+            for (let i = 0, l = hydrationChild.style.length; i < l; i++) {
               let stylePropName = hydrationChild.style[i];
               if (!propValue[stylePropName]) {
                 hydrationChild.style[stylePropName] = EMPTY;
@@ -223,7 +233,7 @@ export function createElement(type, props, component) {
     if (value != null) {
       if (prop === STYLE) {
         setStyle(node, value);
-      } else if (EVENT_PREFIX_REGEXP.test(prop)) {
+      } else if (isEventProp(prop)) {
         addEventListener(node, prop.slice(2).toLowerCase(), value, component);
       } else {
         setAttribute(node, prop, value);
@@ -318,7 +328,14 @@ export function setAttribute(node, propKey, propValue) {
 
 export function setStyle(node, style) {
   for (let prop in style) {
-    node.style[prop] = convertUnit(style[prop]);
+    // Support CSS custom properties
+    const convertedValue = convertUnit(style[prop]);
+    if (prop[0] === '-' && prop[1] === '-') {
+      // reference: https://developer.mozilla.org/en-US/docs/Web/API/CSSStyleDeclaration/setProperty. style.setProperty do not support Camel-Case style properties.
+      node.style.setProperty(prop, convertedValue);
+    } else {
+      node.style[prop] = convertedValue;
+    }
   }
 }
 
@@ -330,7 +347,7 @@ function recolectHydrationChild(hydrationParent) {
   const nativeLength = hydrationParent.childNodes.length;
   const vdomLength = hydrationParent[HYDRATION_INDEX] || 0;
   if (nativeLength - vdomLength > 0) {
-    for (let i = nativeLength - 1; i >= vdomLength; i-- ) {
+    for (let i = nativeLength - 1; i >= vdomLength; i--) {
       hydrationParent.removeChild(hydrationParent.childNodes[i]);
     }
   }
@@ -346,4 +363,12 @@ export function afterRender({ container }) {
     recolectHydrationChild(container);
     isHydrating = false;
   }
+}
+
+/**
+ * Remove all children from node.
+ * @NOTE: Optimization at web.
+ */
+export function removeChildren(node) {
+  node.textContent = '';
 }

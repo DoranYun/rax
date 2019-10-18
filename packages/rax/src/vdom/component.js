@@ -1,7 +1,7 @@
 /**
  * Base component class.
  */
-class Component {
+export default class Component {
   constructor(props, context) {
     this.props = props;
     this.context = context;
@@ -19,13 +19,11 @@ class Component {
 }
 
 /**
- * Pure component class.
+ * Pure component.
  */
 export class PureComponent extends Component {
-  constructor(props, context) {
-    super(props, context);
-    this.isPureComponent = true;
+  constructor() {
+    super(...arguments);
+    this.__isPureComponent = true;
   }
 }
-
-export default Component;

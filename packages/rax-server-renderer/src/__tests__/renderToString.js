@@ -121,6 +121,86 @@ describe('renderToString', () => {
     expect(str).toBe('<div style="line-height:1;"><p style="line-height:10vw;">Hello</p></div>');
   });
 
+  it('render items with same style', () => {
+    const style = {
+      color: '#f00',
+      fontSize: '16px'
+    };
+
+    function MyComponent(props, context) {
+      const data = [1, 2];
+      return (
+        <div>
+          {
+            data.map((_, i) => <div key={i} style={style}>hello</div>)
+          }
+        </div>
+      );
+    }
+
+    const str = renderToString(<MyComponent />);
+    expect(str).toBe('<div><div style="color:#f00;font-size:16px;">hello</div><div style="color:#f00;font-size:16px;">hello</div></div>');
+  });
+
+  it('render items with a base style', () => {
+    const style = {
+      color: '#f00',
+      fontSize: '16px'
+    };
+
+    function MyComponent(props, context) {
+      const data = [1, 2];
+      return (
+        <div>
+          {
+            data.map((item, index) => <div key={index} style={{...style, fontSize: index + 'px'}}>hello</div>)
+          }
+        </div>
+      );
+    }
+
+    const str = renderToString(<MyComponent />);
+    expect(str).toBe('<div><div style="color:#f00;font-size:0px;">hello</div><div style="color:#f00;font-size:1px;">hello</div></div>');
+  });
+
+  it('render items with change to base style', () => {
+    const style = {
+      color: '#f00',
+      fontSize: '16px'
+    };
+
+    function MyComponent(props, context) {
+      const data = [1, 2];
+      return (
+        <div>
+          {
+            data.map((item, index) => {
+              // after map, style.fontSize will be 1px
+              style.fontSize = index + 'px';
+              return <div key={index} style={style}>hello</div>;
+            })
+          }
+        </div>
+      );
+    }
+
+    const str = renderToString(<MyComponent />);
+    expect(str).toBe('<div><div style="color:#f00;font-size:1px;">hello</div><div style="color:#f00;font-size:1px;">hello</div></div>');
+  });
+
+  it('render component with style from props', () => {
+    function MyComponent(props, context) {
+      return (
+        <div style={{fontSize: props.size + 'px'}}>
+          hello
+        </div>
+      );
+    }
+
+    const str = renderToString(<MyComponent size={12} />);
+    expect(str).toBe('<div style="font-size:12px;">hello</div>');
+  });
+
   it('render with options which set default unit to rpx', () => {
     const styles = {
       container: {
@@ -237,7 +317,6 @@ describe('renderToString', () => {
     };
 
     function MyComponent() {
-      const value = useContext(ThemeContext);
       return (
         <ThemeContext.Consumer>
           {value => <div>Current theme is {value}.</div>}
@@ -291,5 +370,163 @@ describe('renderToString', () => {
 
     let str = renderToString(<MyComponent initialCount={0} />);
     expect(str).toBe('<div>Count: 0</div>');
+  });
+
+  it('render with pre compiled html and attrs', () => {
+    function View(props) {
+      return (
+        <div>{props.name}</div>
+      );
+    }
+
+    function MyComponent(props) {
+      // <div className="container" title={props.title}>
+      //   <div>hello</div>
+      //   <View name={props.name} />
+      //   {props.version}
+      // </div>
+
+      return (
+        [{
+          __html: '<div class="container"'
+        }, {
+          __attrs: {
+            title: props.title
+          }
+        }, {
+          __html: '>'
+        }, [{
+          __html: '<div>'
+        }, 'hello', {
+          __html: '</div>'
+        }], createElement(View, {
+          name: props.name
+        }), props.version, {
+          __html: '</div>'
+        }]
+      );
+    }
+
+    let str = renderToString(<MyComponent title="welcome" name="rax" version="1.0" />);
+    expect(str).toBe('<div class="container" title="welcome"><div>hello</div><div>rax</div>1.0</div>');
+  });
+
+  it('render pre compiled html with state hook', () => {
+    function MyComponent(props) {
+      const [name, setName] = useState(props.name);
+
+      return [
+        {
+          __html: '<h1>Hello ',
+        },
+        name,
+        {
+          __html: '</h1>'
+        }
+      ];
+    };
+
+    let str = renderToString(<MyComponent name="rax" />);
+    expect(str).toBe('<h1>Hello rax</h1>');
+  });
+
+  it('render pre compiled html with context', () => {
+    const ThemeContext = createContext('light');
+
+    function MyContext() {
+      return (
+        <ThemeContext.Provider value={'dark'}>
+          <MyComponent />
+        </ThemeContext.Provider>
+      );
+    };
+
+    function MyComponent() {
+      const value = useContext(ThemeContext);
+      return [
+        {
+          __html: '<div>Current theme is ',
+        },
+        value,
+        {
+          __html: '</div>'
+        }
+      ];
+    };
+
+    let str = renderToString(<MyContext />);
+    expect(str).toBe('<div>Current theme is dark</div>');
+  });
+
+
+  it('render two Consumer and one use default context value', function() {
+    const ThemeContext = createContext('light');
+
+    function MyContext() {
+      return (
+        <ThemeContext.Provider value={'dark'}>
+          <MyComponent />
+        </ThemeContext.Provider>
+      );
+    };
+
+    function MyComponent() {
+      return (
+        <ThemeContext.Consumer>
+          {value => <div>{value}</div>}
+        </ThemeContext.Consumer>
+      );
+    };
+
+    function MyContext2() {
+      return (
+        <ThemeContext.Consumer>
+          {value => <div>{value}</div>}
+        </ThemeContext.Consumer>
+      );
+    }
+
+    function App() {
+      return (
+        [
+          <MyContext />,
+          <MyContext2 />
+        ]
+      );
+    };
+
+    const str = renderToString(<App />);
+    expect(str).toBe('<div>dark</div><div>light</div>');
+  });
+
+  it('render one Consumer use default context value', function() {
+    const ThemeContext = createContext('light');
+
+    function MyContext() {
+      return (
+        <ThemeContext.Provider value={'dark'}>
+        </ThemeContext.Provider>
+      );
+    };
+
+    function MyContext2() {
+      return (
+        <ThemeContext.Consumer>
+          {value => <div>{value}</div>}
+        </ThemeContext.Consumer>
+      );
+    }
+
+    function App() {
+      return (
+        [
+          <MyContext />,
+          <MyContext2 />
+        ]
+      );
+    };
+
+    const str = renderToString(<App />);
+    expect(str).toBe('<!-- _ --><div>light</div>');
   });
 });

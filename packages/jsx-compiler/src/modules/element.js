@@ -5,6 +5,7 @@ const createBinding = require('../utils/createBinding');
 const createJSXBinding = require('../utils/createJSXBinding');
 const CodeError = require('../utils/CodeError');
 const DynamicBinding = require('../utils/DynamicBinding');
+const baseComponents = require('../baseComponents');
 
 const ATTR = Symbol('attribute');
 const ELE = Symbol('element');
@@ -287,9 +288,8 @@ function transformTemplate(ast, scope = null, adapter, sourceCode, componentDepe
               if (innerPath.node.__transformed
               || innerPath.parentPath.isMemberExpression()
               || innerPath.parentPath.isObjectProperty()
-              || innerPath.node.__xforArgs
-              || innerPath.node.__mapArgs
-              && !innerPath.node.__mapArgs.item) return;
+              || innerPath.node.__listItem
+              && !innerPath.node.__listItem.item) return;
               const replaceNode = transformIdentifier(innerPath.node, dynamicValues, isDirective);
               replaceNode.__transformed = true;
               innerPath.replaceWith(replaceNode);
@@ -303,18 +303,7 @@ function transformTemplate(ast, scope = null, adapter, sourceCode, componentDepe
             },
             ObjectExpression(innerPath) {
               if (innerPath.node.__transformed) return;
-              const { properties } = innerPath.node;
-              const replaceProperties = properties.map(property => {
-                const { key, value } = property;
-                let replaceNode;
-                if (t.isIdentifier(value)) {
-                  replaceNode = transformIdentifier(innerPath.node, dynamicValues, isDirective);
-                }
-                if (t.isMemberExpression(value)) {
-                  replaceNode = transformMemberExpression(value, dynamicValues, isDirective);
-                }
-                return t.objectProperty(key, replaceNode);
-              });
+              const replaceProperties = transformObjectExpression(innerPath.node, dynamicValues, isDirective);
               const replaceNode = t.objectExpression(replaceProperties);
               replaceNode.__transformed = true;
               innerPath.replaceWith(replaceNode);
@@ -341,13 +330,50 @@ function transformTemplate(ast, scope = null, adapter, sourceCode, componentDepe
     JSXAttribute(path) {
       const { node } = path;
       const attrName = node.name.name;
-
+      // adapt the key attribute
+      if (attrName === 'key') {
+        node.name.name = adapter.key;
+      }
       // Remove ref.
       if (attrName === 'ref') {
         path.remove();
       }
+      if (attrName === 'className') {
+        node.name.name = 'class';
+      }
     },
     JSXExpressionContainer: handleJSXExpressionContainer,
+    JSXOpeningElement: {
+      exit(path) {
+        const { node, parent } = path;
+        const componentTagNode = node.name;
+        if (t.isJSXIdentifier(componentTagNode)) {
+          const name = componentTagNode.name;
+          const replaceName = baseComponents[name];
+          if (replaceName) {
+            componentTagNode.name = replaceName;
+            if (parent.closingElement) {
+              parent.closingElement.name = t.jsxIdentifier(replaceName);
+            }
+            const propsMap = adapter[replaceName];
+            let hasClassName = false;
+            node.attributes.forEach(attr => {
+              if (t.isJSXIdentifier(attr.name)) {
+                if (attr.name.name === 'class') {
+                  attr.value.value = propsMap.className + ' ' + attr.value.value;
+                  hasClassName = true;
+                } else if (propsMap[attr.name.name]) {
+                  attr.name.name = propsMap[attr.name.name];
+                }
+              }
+            });
+            if (!hasClassName) {
+              node.attributes.push(t.jsxAttribute(t.jsxIdentifier('class'), t.stringLiteral(propsMap.className)));
+            }
+          }
+        }
+      }
+    }
   });
 
   return { dynamicValues: dynamicValues.getStore(), dynamicEvents: dynamicEvents.getStore() };
@@ -376,7 +402,7 @@ function hasComplexExpression(path) {
       const { properties } = innerPath.node;
       const checkNested = properties.some(property => {
         const { value } = property;
-        return !t.isIdentifier(value) && !t.isMemberExpression(value);
+        return !t.isIdentifier(value) && !t.isMemberExpression(value) && !t.isBinaryExpression(value);
       });
       if (checkNested) {
         isComplex(innerPath);
@@ -414,7 +440,7 @@ function transformMemberExpression(expression, dynamicBinding, isDirective) {
       replaceNode.__transformed = true;
       return replaceNode;
     }
-    if (t.isIdentifier(object) && !object.__xforArgs) {
+    if (t.isIdentifier(object)) {
       objectReplaceNode = transformIdentifier(object, dynamicBinding, isDirective);
       objectReplaceNode.__transformed = true;
     }
@@ -437,10 +463,17 @@ function transformMemberExpression(expression, dynamicBinding, isDirective) {
  * */
 function transformIdentifier(expression, dynamicBinding, isDirective) {
   let replaceNode;
-  if (expression.__xforArgs || expression.__mapArgs && !expression.__mapArgs.item) {
+  if (expression.__listItem
+    && !expression.__listItem.item
+    || expression.__templateVar) {
+    // The identifier is x-for args or template variable or map's index
     replaceNode = expression;
-  } else if (expression.__mapArgs && expression.__mapArgs.item) {
-    replaceNode = t.memberExpression(t.identifier(expression.__mapArgs.item), expression);
+  } else if (expression.__listItem && expression.__listItem.item) {
+    const itemNode = t.identifier(expression.__listItem.item);
+    itemNode.__listItem = {
+      jsxplus: expression.__listItem.jsxplus
+    };
+    replaceNode = t.memberExpression(itemNode, expression);
   } else {
     const name = dynamicBinding.add({
       expression,
@@ -449,6 +482,27 @@ function transformIdentifier(expression, dynamicBinding, isDirective) {
     replaceNode = t.identifier(name);
   }
   return replaceNode;
+}
+
+/**
+ * Transform ObjectExpression
+ * */
+function transformObjectExpression(expression, dynamicBinding, isDirective) {
+  const { properties } = expression;
+  return properties.map(property => {
+    const { key, value } = property;
+    let replaceNode = value;
+    if (t.isIdentifier(value)) {
+      replaceNode = transformIdentifier(value, dynamicBinding, isDirective);
+    }
+    if (t.isMemberExpression(value)) {
+      replaceNode = transformMemberExpression(value, dynamicBinding, isDirective);
+    }
+    if (t.isObjectExpression(value)) {
+      replaceNode = transformObjectExpression(value, dynamicBinding, isDirective);
+    }
+    return t.objectProperty(key, replaceNode);
+  });
 }
 
 function checkMemberHasThis(expression) {

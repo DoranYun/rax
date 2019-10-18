@@ -1,4 +1,4 @@
-const { join } = require('path');
+const { join, relative, dirname } = require('path');
 const { readJSONSync } = require('fs-extra');
 const t = require('@babel/types');
 const { _transform: transformTemplate } = require('./element');
@@ -7,8 +7,10 @@ const traverse = require('../utils/traverseNodePath');
 const moduleResolve = require('../utils/moduleResolve');
 const createJSX = require('../utils/createJSX');
 const Expression = require('../utils/Expression');
+const baseComponents = require('../baseComponents');
 
 const RELATIVE_COMPONENTS_REG = /^\..*(\.jsx?)?$/i;
+const PKG_NAME_REG = /^.*\/node_modules\/([^\/]*).*$/;
 let tagCount = 0;
 
 /**
@@ -19,57 +21,17 @@ module.exports = {
     const componentsDependentProps = parsed.componentDependentProps = {};
     const usingComponents = parsed.usingComponents = {};
 
-    function getComponentAlias(tagName) {
-      if (parsed.imported) {
-        for (let [key, value] of Object.entries(parsed.imported)) {
-          for (let i = 0, l = value.length; i < l; i++) {
-            if (value[i].local === tagName) return Object.assign({ from: key }, value[i]);
-          }
-        }
-      }
-    }
-
-    function getComponentConfig(pkgName) {
-      const pkgPath = moduleResolve(options.filePath, join(pkgName, 'package.json'));
-      if (!pkgPath) {
-        throw new Error(`MODULE_NOT_RESOLVE: Can not resolve rax component "${pkgName}", please check you have this module installed.`);
-      }
-      return readJSONSync(pkgPath);
-    }
-
-    function getComponentPath(alias) {
-      if (RELATIVE_COMPONENTS_REG.test(alias.from)) {
-        // alias.local
-        if (!options.filePath) {
-          throw new Error('`filePath` must be passed to calc dependency path.');
-        }
-
-        const filename = moduleResolve(options.filePath, alias.from, '.jsx')
-          || moduleResolve(options.filePath, alias.from, '.js');
-        return filename;
-      } else {
-        // npm module
-        const pkg = getComponentConfig(alias.from);
-        if (pkg.miniappConfig && pkg.miniappConfig.main) {
-          return join('/npm', alias.from, pkg.miniappConfig.main);
-        } else {
-          console.warn('Can not found compatible rax miniapp component "' + pkg.name + '".');
-        }
-      }
-    }
-
     traverse(parsed.templateAST, {
       JSXOpeningElement(path) {
         const { node, scope, parent, parentPath } = path;
 
         if (t.isJSXIdentifier(node.name)) { // <View />
-          const alias = getComponentAlias(node.name.name);
-          removeImport(alias);
+          const alias = getComponentAlias(node.name.name, parsed.imported);
+          removeImport(parsed.ast, alias);
           if (alias) {
             // Miniapp template tag name does not support special characters.
             const componentTag = alias.name.replace(/@|\//g, '_');
             const parentJSXListEl = path.findParent(p => p.node.__jsxlist);
-
             // <tag __tagId="tagId" />
             let tagId = '' + tagCount++;
             if (parentJSXListEl) {
@@ -84,32 +46,16 @@ module.exports = {
               componentsDependentProps[tagId].tagIdExpression = parentPath.node.__tagIdExpression;
 
               if (parsed.renderFunctionPath) {
-                const { args, iterValue, loopFnBody } = parentJSXListEl.node.__jsxlist;
-                const __args = [
-                  args[0] || t.identifier('item'),
-                  args[1] || t.identifier('index'),
-                ];
-                const callee = t.memberExpression(iterValue, t.identifier('forEach'));
-                const block = t.blockStatement([]);
-
-                const loopArgs = [t.arrowFunctionExpression(__args, block)];
-                const loopExp = t.expressionStatement(t.callExpression(callee, loopArgs));
-
-                const fnBody = parsed.renderFunctionPath.node.body.body;
-                const grandJSXListEl = parentJSXListEl.findParent(p => p.node.__jsxlist);
-                const body = grandJSXListEl && grandJSXListEl.node.__jsxlist.loopBlockStatement
-                  ? grandJSXListEl.node.__jsxlist.loopBlockStatement.body
-                  : fnBody;
-
-                body.push(loopExp);
-                // Can be removed if not used.
-                block.body.remove = () => {
-                  const index = body.indexOf(loopExp);
-                  body.splice(index, 1);
-                };
-                componentsDependentProps[tagId].parentNode = block.body;
-                parentJSXListEl.node.__jsxlist.loopBlockStatement = block;
+                const { loopFnBody } = parentJSXListEl.node.__jsxlist;
+                componentsDependentProps[tagId].parentNode = loopFnBody.body;
               }
+            }
+
+            if (alias.isCustomEl) {
+              node.attributes.push(t.jsxAttribute(
+                t.jsxIdentifier('__parentId'),
+                t.stringLiteral('{{__tagId}}')
+              ));
             }
 
             node.attributes.push(t.jsxAttribute(
@@ -120,13 +66,14 @@ module.exports = {
             node.name = t.jsxIdentifier(componentTag);
             // Handle with close tag too.
             if (parent.closingElement) parent.closingElement.name = t.jsxIdentifier(componentTag);
-            usingComponents[componentTag] = getComponentPath(alias);
-
+            if (!baseComponents[componentTag]) {
+              usingComponents[componentTag] = getComponentPath(alias, options);
+            }
             /**
              * Handle with special attrs.
              */
             if (!RELATIVE_COMPONENTS_REG.test(alias.from)) {
-              const pkg = getComponentConfig(alias.from);
+              const pkg = getComponentConfig(alias.from, options.resourcePath);
               if (pkg && pkg.miniappConfig && Array.isArray(pkg.miniappConfig.renderSlotProps)) {
                 path.traverse({
                   JSXAttribute(attrPath) {
@@ -165,12 +112,17 @@ module.exports = {
         } else if (t.isJSXMemberExpression(node.name)) { // <RecyclerView.Cell />
           const { object, property } = node.name;
           if (t.isJSXIdentifier(object) && t.isJSXIdentifier(property)) {
-            const alias = getComponentAlias(object.name);
-            removeImport(alias);
+            const alias = getComponentAlias(object.name, parsed.imported);
+            removeImport(parsed.ast, alias);
             if (alias) {
-              const pkg = getComponentConfig(alias.from);
+              const pkg = getComponentConfig(alias.from, options.resourcePath);
               if (pkg && pkg.miniappConfig && pkg.miniappConfig.subComponents && pkg.miniappConfig.subComponents[property.name]) {
-                node.name = t.jsxIdentifier(pkg.miniappConfig.subComponents[property.name].tagNameMap);
+                let subComponent = pkg.miniappConfig.subComponents[property.name];
+                node.name = t.jsxIdentifier(subComponent.tagNameMap);
+                // subComponent default style
+                if (subComponent.attributes && subComponent.attributes.style) {
+                  path.parentPath.node.openingElement.attributes.push(t.jsxAttribute(t.jsxIdentifier('style'), t.stringLiteral(subComponent.attributes.style)));
+                }
                 if (path.parentPath.node.closingElement) {
                   path.parentPath.node.closingElement.name = t.jsxIdentifier(pkg.miniappConfig.subComponents[property.name].tagNameMap);
                 }
@@ -195,23 +147,73 @@ module.exports = {
         }
       },
     });
-
-    function removeImport(alias) {
-      if (!alias) return;
-      traverse(parsed.ast, {
-        ImportDeclaration(path) {
-          const { node } = path;
-          if (t.isStringLiteral(node.source) && node.source.value === alias.from) {
-            path.remove();
-          }
-        }
-      });
-    }
   },
   generate(ret, parsed, options) {
     ret.usingComponents = parsed.usingComponents;
   },
 };
+
+function getComponentAlias(tagName, imported) {
+  if (imported) {
+    for (let [key, value] of Object.entries(imported)) {
+      for (let i = 0, l = value.length; i < l; i++) {
+        if (value[i].local === tagName) return Object.assign({ from: key }, value[i]);
+      }
+    }
+  }
+}
+
+function getComponentConfig(pkgName, resourcePath) {
+  const pkgPath = moduleResolve(resourcePath, join(pkgName, 'package.json'));
+  if (!pkgPath) {
+    throw new Error(`MODULE_NOT_RESOLVE: Can not resolve rax component "${pkgName}", please check you have this module installed.`);
+  }
+  return readJSONSync(pkgPath);
+}
+
+// for tnpm, the package name will be like _rax-image@1.1.2@rax-image
+function getRealNpmPkgName(filePath) {
+  const result = PKG_NAME_REG.exec(filePath);
+  return result && result[1].replace(/@/g, '_');
+}
+
+function getComponentPath(alias, options) {
+  if (RELATIVE_COMPONENTS_REG.test(alias.from)) {
+    // alias.local
+    if (!options.resourcePath) {
+      throw new Error('`resourcePath` must be passed to calc dependency path.');
+    }
+
+    const filename = moduleResolve(options.resourcePath, alias.from, '.jsx')
+      || moduleResolve(options.resourcePath, alias.from, '.js');
+    return filename;
+  } else {
+    const realNpmFile = require.resolve(alias.from, { paths: [options.resourcePath] });
+    const pkgName = getRealNpmPkgName(realNpmFile);
+    // npm module
+    const pkg = getComponentConfig(alias.from, options.resourcePath);
+    if (pkg.miniappConfig && pkg.miniappConfig.main) {
+      const targetFileDir = dirname(join(options.outputPath, relative(options.sourcePath, options.resourcePath)));
+      let npmRelativePath = relative(targetFileDir, join(options.outputPath, '/npm'));
+      npmRelativePath = npmRelativePath[0] !== '.' ? './' + npmRelativePath : npmRelativePath;
+      return './' + join(npmRelativePath, pkgName, pkg.miniappConfig.main);
+    } else {
+      console.warn('Can not found compatible rax miniapp component "' + pkg.name + '".');
+    }
+  }
+}
+
+function removeImport(ast, alias) {
+  if (!alias) return;
+  traverse(ast, {
+    ImportDeclaration(path) {
+      const { node } = path;
+      if (t.isStringLiteral(node.source) && node.source.value === alias.from) {
+        path.remove();
+      }
+    }
+  });
+}
 
 function createSlotComponent(jsxEl, slotName, args) {
   const params = {};

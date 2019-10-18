@@ -1,26 +1,24 @@
 import Host from './vdom/host';
 import Element from './vdom/element';
 import flattenChildren from './vdom/flattenChildren';
+import { invokeMinifiedError } from './error';
+import { isString, isArray } from './types';
+import warning from './warning';
+import validateChildKeys from './validateChildKeys';
+import getRenderErrorInfo from './getRenderErrorInfo';
 
 const RESERVED_PROPS = {
   key: true,
   ref: true,
 };
 
-function getRenderErrorInfo() {
-  const ownerComponent = Host.owner;
-  if (ownerComponent) {
-    var name = ownerComponent.getName();
-    if (name) {
-      return ' Check the render method of `' + name + '`.';
-    }
-  }
-  return '';
-}
-
 export default function createElement(type, config, children) {
   if (type == null) {
-    throw Error('createElement: type should not be null or undefined.' + getRenderErrorInfo());
+    if (process.env.NODE_ENV !== 'production') {
+      throw new Error('createElement: type should not be null or undefined.' + getRenderErrorInfo());
+    } else {
+      invokeMinifiedError(0);
+    }
   }
   // Reserved names are extracted
   let props = {};
@@ -30,25 +28,40 @@ export default function createElement(type, config, children) {
   const ownerComponent = Host.owner;
 
   if (config != null) {
-    ref = config.ref === undefined ? null : config.ref;
-    key = config.key === undefined ? null : String(config.key);
+    let hasReservedProps = false;
 
-    if (typeof ref === 'string' && !ownerComponent) {
-      console.error('createElement: adding a string ref "' + ref + '" outside the render method.');
+    if (config.ref != null) {
+      hasReservedProps = true;
+      ref = config.ref;
+      if (process.env.NODE_ENV !== 'production') {
+        if (isString(ref) && !ownerComponent) {
+          warning('createElement: adding a string ref "' + ref + '" outside the render method.');
+        }
+      }
     }
 
-    // Remaining properties are added to a new props object
-    for (propName in config) {
-      if (!RESERVED_PROPS[propName]) {
-        props[propName] = config[propName];
+    if (config.key != null) {
+      hasReservedProps = true;
+      key = '' + config.key;
+    }
+
+    // If no reserved props, assign config to props for better performance
+    if (hasReservedProps) {
+      for (propName in config) {
+        // Extract reserved props
+        if (!RESERVED_PROPS[propName]) {
+          props[propName] = config[propName];
+        }
       }
+    } else {
+      props = config;
     }
   }
 
   // Children arguments can be more than one
   const childrenLength = arguments.length - 2;
   if (childrenLength > 0) {
-    if (childrenLength === 1 && !Array.isArray(children)) {
+    if (childrenLength === 1 && !isArray(children)) {
       props.children = children;
     } else {
       let childArray = children;
@@ -69,6 +82,12 @@ export default function createElement(type, config, children) {
       if (props[propName] === undefined) {
         props[propName] = defaultProps[propName];
       }
+    }
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    for (let i = 2; i < arguments.length; i ++) {
+      validateChildKeys(arguments[i], type);
     }
   }
 

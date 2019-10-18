@@ -1,4 +1,5 @@
 import Component from './component';
+import {INTERNAL, RENDERED_COMPONENT} from '../constant';
 
 let rootID = 1;
 
@@ -6,25 +7,25 @@ class Root extends Component {
   constructor() {
     super();
     // Using fragment instead of null for avoid create a comment node when init mount
-    this.element = [];
-    this.rootID = rootID++;
+    this.__element = [];
+    this.__rootID = rootID++;
   }
 
-  getPublicInstance() {
-    return this.getRenderedComponent().getPublicInstance();
+  __getPublicInstance() {
+    return this.__getRenderedComponent().__getPublicInstance();
   }
 
-  getRenderedComponent() {
-    return this._internal._renderedComponent;
+  __getRenderedComponent() {
+    return this[INTERNAL][RENDERED_COMPONENT];
   }
 
-  update(element) {
-    this.element = element;
+  __update(element) {
+    this.__element = element;
     this.forceUpdate();
   }
 
   render() {
-    return this.element;
+    return this.__element;
   }
 }
 

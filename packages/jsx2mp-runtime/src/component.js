@@ -1,14 +1,19 @@
+/* global PROPS */
 /**
  * Base Component class definition.
  */
 import Host from './host';
-import { updateChildProps, removeComponentProps } from './updater';
-import { enqueueRender } from './enqueueRender';
+import {updateChildProps, removeComponentProps} from './updater';
+import {enqueueRender} from './enqueueRender';
 import isFunction from './isFunction';
 import {
   RENDER,
   ON_SHOW,
   ON_HIDE,
+  ON_PAGE_SCROLL,
+  ON_REACH_BOTTOM,
+  ON_PULL_DOWN_REFRESH,
+  ON_SHARE_APP_MESSAGE,
   COMPONENT_DID_MOUNT,
   COMPONENT_DID_UPDATE,
   COMPONENT_WILL_MOUNT,
@@ -42,14 +47,14 @@ export default class Component {
     }
 
     enqueueRender(this);
-  }
+  };
 
   forceUpdate = (callback) => {
     if (isFunction(callback)) {
       this._pendingCallbacks.push(callback);
     }
     this._updateComponent();
-  }
+  };
 
   getHooks() {
     return this._hooks;
@@ -76,11 +81,9 @@ export default class Component {
   _updateData(data) {
     if (!this._internal) return;
     data.$ready = true;
+    data.__tagId = this.props.__tagId;
     this.__updating = true;
-    Object.assign(this.state, data);
-    this._internal.setData(data, () => {
-      this.__updating = false;
-    });
+    this._setData(data);
   }
 
   _updateMethods(methods) {
@@ -88,7 +91,8 @@ export default class Component {
   }
 
   _updateChildProps(instanceId, props) {
-    updateChildProps(this, instanceId, props);
+    const chlidInstanceId = this.props.__parentId ? this.props.__parentId + '-' + instanceId : instanceId;
+    updateChildProps(this, chlidInstanceId, props);
   }
 
   _collectState() {
@@ -206,6 +210,7 @@ export default class Component {
    * @private
    */
   _trigger(cycle, ...args) {
+    let ret;
     switch (cycle) {
       case COMPONENT_WILL_MOUNT:
       case COMPONENT_DID_MOUNT:
@@ -215,6 +220,9 @@ export default class Component {
       case COMPONENT_WILL_UNMOUNT:
       case ON_SHOW:
       case ON_HIDE:
+      case ON_PAGE_SCROLL:
+      case ON_REACH_BOTTOM:
+      case ON_PULL_DOWN_REFRESH:
         if (isFunction(this[cycle])) this[cycle](...args);
         if (this._cycles.hasOwnProperty(cycle)) {
           this._cycles[cycle].forEach(fn => fn(...args));
@@ -230,7 +238,12 @@ export default class Component {
 
         this.render(this.props = nextProps, this.state = nextState);
         break;
+
+      case ON_SHARE_APP_MESSAGE:
+        if (isFunction(this[cycle])) ret = this[cycle](...args);
+        break;
     }
+    return ret;
   }
 
   /**
@@ -240,9 +253,38 @@ export default class Component {
    */
   _setInternal(internal) {
     this._internal = internal;
-    this.props = internal.props;
+    this.props = internal[PROPS];
     if (!this.state) this.state = {};
     Object.assign(this.state, internal.data);
+  }
+  /**
+   * Internal set data method
+   * @param data {Object}
+   * */
+  _setData(data) {
+    // In alibaba miniapp can use $spliceData optimize long list
+    if (this._internal.$spliceData) {
+      const useSpliceData = {};
+      const useSetData = {};
+      for (let key in data) {
+        if (Array.isArray(data[key]) && diffArray(this.state[key], data[key])) {
+          useSpliceData[key] = [this.state[key].length, 0].concat(data[key].slice(this.state[key].length));
+        } else {
+          if (diffData(this.state[key], data[key])) {
+            useSetData[key] = data[key];
+          }
+        }
+      }
+      if (!isEmptyObj(useSetData)) {
+        this._internal.setData(useSetData);
+      }
+      if (!isEmptyObj(useSpliceData)) {
+        this._internal.$spliceData(useSpliceData);
+      }
+    } else {
+      this._internal.setData(data);
+    }
+    Object.assign(this.state, data);
   }
 }
 
@@ -251,4 +293,34 @@ function diffProps(prev, next) {
     if (next[key] !== prev[key]) return true;
   }
   return false;
+}
+
+function diffArray(prev, next) {
+  if (!Array.isArray(prev)) return false;
+  // Only concern about list append case
+  if (next.length === 0) return false;
+  if (prev.length === 0) return false;
+  return next.slice(0, prev.length).every((val, index) => prev[index] === val);
+}
+
+function diffData(prevData, nextData) {
+  const prevType = typeof prevData;
+  const nextType = typeof nextData;
+  if (prevType !== nextType) return true;
+  if (prevType === 'object' && prevData !== null) {
+    const prevKeys = Object.keys(prevData);
+    const nextKeys = Object.keys(nextData);
+    if (prevKeys.length !== nextKeys.length) return true;
+    if (prevKeys.length === 0) return false;
+    return !prevKeys.some(key => prevData[key] === nextData[key] );
+  } else {
+    return prevData !== nextData;
+  }
+}
+
+function isEmptyObj(obj) {
+  for (let key in obj) {
+    return false;
+  }
+  return true;
 }

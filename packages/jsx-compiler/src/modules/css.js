@@ -26,7 +26,7 @@ module.exports = {
 
     Object.keys(imported).forEach((rawPath) => {
       if (isFilenameCSS(rawPath)) {
-        const resolvedPath = moduleResolve(options.filePath, rawPath);
+        const resolvedPath = moduleResolve(options.resourcePath, rawPath);
         if (resolvedPath) {
           const isAnomyousImport = imported[rawPath].length === 0;
           parsed.cssFiles.push({
@@ -58,7 +58,7 @@ module.exports = {
       parsed.cssFiles.forEach((cssFile) => {
         ret.dependencies.push(cssFile.filename);
         if (cssFile.type === 'cssObject') {
-          const relativePath = relative(options.cwd, cssFile.filename);
+          const relativePath = relative(options.sourcePath, cssFile.filename);
           ret.assets[relativePath + '.js'] = createCSSModule(cssFile.content);
         } else if (cssFile.type === 'cssFile') {
           ret.style += convertCSSUnit(cssFile.content);
@@ -78,6 +78,6 @@ function convertCSSUnit(raw, originExt = 'rem', targetExt = 'rpx') {
 }
 
 function createCSSModule(content) {
-  const loaderContext = { query: '?disableLog=true' };
+  const loaderContext = { query: '?log=false' };
   return stylesheetLoader.call(loaderContext, content);
 }

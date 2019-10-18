@@ -1,12 +1,20 @@
 let updateCallbacks = [];
 let effectCallbacks = [];
-let scheduler = setTimeout;
+let layoutCallbacks = [];
+export let scheduler = setTimeout;
 
 if (process.env.NODE_ENV !== 'production') {
   // Wrapper timer for hijack timers in jest
   scheduler = (callback) => {
     setTimeout(callback);
   };
+}
+
+function invokeFunctionsWithClear(callbacks) {
+  let callback;
+  while (callback = callbacks.shift()) {
+    callback();
+  }
 }
 
 // Schedule before next render
@@ -19,11 +27,7 @@ export function schedule(callback) {
 
 // Flush before next render
 export function flush() {
-  let callbacks = updateCallbacks;
-  if (callbacks.length !== 0) {
-    updateCallbacks = [];
-    callbacks.forEach(callback => callback());
-  }
+  invokeFunctionsWithClear(updateCallbacks);
 }
 
 export function scheduleEffect(callback) {
@@ -34,9 +38,13 @@ export function scheduleEffect(callback) {
 }
 
 export function flushEffect() {
-  let callbacks = effectCallbacks;
-  if (callbacks.length !== 0) {
-    effectCallbacks = [];
-    callbacks.forEach(callback => callback());
-  }
+  invokeFunctionsWithClear(effectCallbacks);
+}
+
+export function scheduleLayout(callback) {
+  layoutCallbacks.push(callback);
+}
+
+export function flushLayout() {
+  invokeFunctionsWithClear(layoutCallbacks);
 }

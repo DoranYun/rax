@@ -2,20 +2,22 @@ import Host from './host';
 import createElement from '../createElement';
 import instantiateComponent from './instantiateComponent';
 import Root from './root';
+import {INTERNAL, RENDERED_COMPONENT} from '../constant';
 
 /**
  * Instance manager
+ * @NOTE Key should not be compressed, for that will be added to native node and cause DOM Exception.
  */
-const KEY = '__r';
+const KEY = '_r';
 
 export default {
   set(node, instance) {
     if (!node[KEY]) {
       node[KEY] = instance;
       // Record root instance to roots map
-      if (instance.rootID) {
-        Host.rootInstances[instance.rootID] = instance;
-        Host.rootComponents[instance.rootID] = instance._internal;
+      if (instance.__rootID) {
+        Host.rootInstances[instance.__rootID] = instance;
+        Host.rootComponents[instance.__rootID] = instance[INTERNAL];
       }
     }
   },
@@ -26,9 +28,9 @@ export default {
     let instance = this.get(node);
     if (instance) {
       node[KEY] = null;
-      if (instance.rootID) {
-        delete Host.rootComponents[instance.rootID];
-        delete Host.rootInstances[instance.rootID];
+      if (instance.__rootID) {
+        delete Host.rootComponents[instance.__rootID];
+        delete Host.rootInstances[instance.__rootID];
       }
     }
   },
@@ -56,35 +58,35 @@ export default {
     // Get the context from the conceptual parent component.
     let parentContext;
     if (parent) {
-      let parentInternal = parent._internal;
-      parentContext = parentInternal._processChildContext(parentInternal._context);
+      let parentInternal = parent[INTERNAL];
+      parentContext = parentInternal.__processChildContext(parentInternal._context);
     }
 
     // Update root component
     let prevRootInstance = this.get(container);
-    if (prevRootInstance && prevRootInstance.rootID) {
+    if (prevRootInstance && prevRootInstance.__rootID) {
       if (parentContext) {
-        // Using _penddingContext to pass new context
-        prevRootInstance._internal._penddingContext = parentContext;
+        // Using __penddingContext to pass new context
+        prevRootInstance[INTERNAL].__penddingContext = parentContext;
       }
-      prevRootInstance.update(element);
+      prevRootInstance.__update(element);
       return prevRootInstance;
     }
 
     // Init root component with empty children
     let renderedComponent = instantiateComponent(createElement(Root));
     let defaultContext = parentContext || {};
-    let rootInstance = renderedComponent.mountComponent(container, null, defaultContext);
+    let rootInstance = renderedComponent.__mountComponent(container, null, defaultContext);
     this.set(container, rootInstance);
     // Mount new element through update queue avoid when there is in rendering phase
-    rootInstance.update(element);
+    rootInstance.__update(element);
 
     // After render callback
     driver.afterRender && driver.afterRender(renderOptions);
 
     if (process.env.NODE_ENV !== 'production') {
       // Devtool render new root hook
-      Host.reconciler.renderNewRootComponent(rootInstance._internal._renderedComponent);
+      Host.reconciler.renderNewRootComponent(rootInstance[INTERNAL][RENDERED_COMPONENT]);
 
       Host.measurer && Host.measurer.afterRender();
     }

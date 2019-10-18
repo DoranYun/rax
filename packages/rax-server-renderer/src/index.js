@@ -117,7 +117,42 @@ function styleToCSS(style, options = {}) {
     prop = CSSPropCache[prop] ? CSSPropCache[prop] : CSSPropCache[prop] = prop.replace(UPPERCASE_REGEXP, '-$&').toLowerCase();
     css = css + `${prop}:${val}${unit};`;
   }
+
   return css;
+}
+
+function propsToString(props, options) {
+  let html = '';
+  for (var prop in props) {
+    var value = props[prop];
+
+    if (prop === 'children') {
+      // Ignore children prop
+    } else if (prop === 'style') {
+      html = html + ` style="${styleToCSS(value, options)}"`;
+    } else if (prop === 'className') {
+      html = html + ` class="${escapeText(value)}"`;
+    } else if (prop === 'defaultValue') {
+      if (!props.value) {
+        html = html + ` value="${typeof value === 'string' ? escapeText(value) : value}"`;
+      }
+    } else if (prop === 'defaultChecked') {
+      if (!props.checked) {
+        html = html + ` checked="${value}"`;
+      }
+    } else if (prop === 'dangerouslySetInnerHTML') {
+      // Ignore innerHTML
+    } else {
+      if (typeof value === 'string') {
+        html = html + ` ${prop}="${escapeText(value)}"`;
+      } else if (typeof value === 'number') {
+        html = html + ` ${prop}="${String(value)}"`;
+      } else if (typeof value === 'boolean') {
+        html = html + ` ${prop}`;
+      }
+    }
+  }
+  return html;
 }
 
 function rpx2vw(val, opts) {
@@ -146,7 +181,7 @@ const updater = {
 /**
  * Functional Reactive Component Class Wrapper
  */
-class ReactiveComponent {
+class ServerReactiveComponent {
   constructor(pureRender) {
     // A pure function
     this._render = pureRender;
@@ -166,17 +201,19 @@ class ReactiveComponent {
     return ++this._hookID;
   }
 
-  readContext(context) {
-    const Provider = context.Provider;
-    const contextProp = Provider.contextProp;
-    return this.context[contextProp] ? this.context[contextProp].value : Provider.defaultValue;
+  useContext(context) {
+    const contextID = context._contextID;
+
+    if (this.context[contextID]) {
+      return this.context[contextID].getValue();
+    } else {
+      return context._defaultValue;
+    }
   }
 
   render() {
     this._hookID = 0;
-
     let children = this._render(this.props, this.context);
-
     return children;
   }
 }
@@ -197,17 +234,34 @@ function renderElementToString(element, context, options) {
     return html;
   }
 
+  // pre compiled html
+  if (element.__html) {
+    return element.__html;
+  }
+
+  // pre compiled attrs
+  if (element.__attrs) {
+    return propsToString(element.__attrs, options);
+  }
+
   const type = element.type;
 
   if (type) {
     const props = element.props || EMPTY_OBJECT;
     if (type.prototype && type.prototype.render) {
-      const instance = new type(props, context, updater); // eslint-disable-line new-cap
+      const instance = new type(props, context); // eslint-disable-line new-cap
+      instance.props = props;
       let currentContext = instance.context = context;
+      // Inject the updater into instance
+      instance.updater = updater;
 
       let childContext;
+
       if (instance.getChildContext) {
         childContext = instance.getChildContext();
+      } else if (instance._getChildContext) {
+        // Only defined in Provider
+        childContext = instance._getChildContext();
       }
 
       if (childContext) {
@@ -236,11 +290,12 @@ function renderElementToString(element, context, options) {
       var renderedElement = instance.render();
       return renderElementToString(renderedElement, currentContext, options);
     } else if (typeof type === 'function') {
-      const instance = new ReactiveComponent(type);
+      const instance = new ServerReactiveComponent(type);
       instance.props = props;
       instance.context = context;
 
       shared.Host.owner = {
+        __getName: () => type.name,
         _instance: instance
       };
 
@@ -248,37 +303,11 @@ function renderElementToString(element, context, options) {
       return renderElementToString(renderedElement, context, options);
     } else if (typeof type === 'string') {
       const isVoidElement = VOID_ELEMENTS[type];
-      let html = `<${type}`;
+      let html = `<${type}${propsToString(props, options)}`;
       let innerHTML;
 
-      for (var prop in props) {
-        var value = props[prop];
-
-        if (prop === 'children') {
-          // Ignore children prop
-        } else if (prop === 'style') {
-          html = html + ` style="${styleToCSS(value, options)}"`;
-        } else if (prop === 'className') {
-          html = html + ` class="${escapeText(value)}"`;
-        } else if (prop === 'defaultValue') {
-          if (!props.value) {
-            html = html + ` value="${typeof value === 'string' ? escapeText(value) : value}"`;
-          }
-        } else if (prop === 'defaultChecked') {
-          if (!props.checked) {
-            html = html + ` checked="${value}"`;
-          }
-        } else if (prop === 'dangerouslySetInnerHTML') {
-          innerHTML = value.__html;
-        } else {
-          if (typeof value === 'string') {
-            html = html + ` ${prop}="${escapeText(value)}"`;
-          } else if (typeof value === 'number') {
-            html = html + ` ${prop}="${String(value)}"`;
-          } else if (typeof value === 'boolean') {
-            html = html + ` ${prop}`;
-          }
-        }
+      if (props.dangerouslySetInnerHTML) {
+        innerHTML = props.dangerouslySetInnerHTML.__html;
       }
 
       if (isVoidElement) {
@@ -309,6 +338,11 @@ function renderElementToString(element, context, options) {
   }
 }
 
-exports.renderToString = function renderToString(element, options = {}) {
+export function renderToString(element, options = {}) {
   return renderElementToString(element, EMPTY_OBJECT, Object.assign({}, DEFAULT_STYLE_OPTIONS, options));
+}
+
+export default {
+  renderToString
 };
+
